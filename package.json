@@ -1,0 +1,26 @@
+{
+  "name": "developer-lab",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @developer-lab/api --filter @developer-lab/web dev",
+    "dev:api": "pnpm --filter @developer-lab/api dev",
+    "dev:web": "pnpm --filter @developer-lab/web dev",
+    "build": "pnpm --filter @developer-lab/shared build && pnpm --filter @developer-lab/db build && pnpm --filter @developer-lab/api build && pnpm --filter @developer-lab/web build",
+    "db:generate": "pnpm --filter @developer-lab/db generate",
+    "db:migrate": "pnpm --filter @developer-lab/db migrate",
+    "db:push": "pnpm --filter @developer-lab/db push",
+    "test": "pnpm --filter @developer-lab/api test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@libsql/client",
+      "better-sqlite3",
+      "esbuild",
+      "@parcel/watcher"
+    ]
+  }
+}

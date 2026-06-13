@@ -1,0 +1,64 @@
+---
+description: Notificações do frontend com useToast (Nuxt UI) via useAppToast
+globs: apps/web/**/*.{vue,ts}
+alwaysApply: false
+---
+
+# Notificações com toast (Nuxt UI)
+
+No frontend (`apps/web`), use **sempre** o composable `useAppToast` para feedback ao usuário. Não use `UAlert` inline para sucesso, erro ou aviso em formulários e ações.
+
+O toaster já está habilitado pelo `<UApp>` em `app.vue`. Não chame `useToast()` diretamente nas páginas — use o wrapper do projeto.
+
+## Composable
+
+Arquivo: `apps/web/composables/useAppToast.ts`
+
+| Método | Quando usar |
+|--------|-------------|
+| `showSuccess(title, description?)` | Ação concluída com sucesso |
+| `showError(title, description?)` | Erro genérico |
+| `showWarning(title, description?)` | Aviso |
+| `showInfo(title, description?)` | Informação |
+| `showApiError(error, fallback)` | Erro de API/mutation (usa `getApiErrorMessage`) |
+| `showFormErrors(event, fallback?)` | Validação do `UForm` (`@error`) |
+
+Mensagens em **português brasileiro**.
+
+## Padrões
+
+```vue
+<script setup lang="ts">
+const { showApiError, showSuccess, showFormErrors } = useAppToast();
+
+async function onSubmit() {
+  try {
+    await mutation.mutateAsync(payload);
+    showSuccess('Workspace criado com sucesso');
+  } catch (error) {
+    showApiError(error, 'Não foi possível criar o workspace');
+  }
+}
+</script>
+
+<template>
+  <UForm @submit="onSubmit" @error="showFormErrors">
+    <!-- campos -->
+  </UForm>
+</template>
+```
+
+Erros de query (TanStack Query): use `watch` no `error` e chame `showApiError` — não bloqueie a página com `UAlert`.
+
+```ts
+watch(error, (value) => {
+  if (value) showApiError(value, 'Erro ao carregar dados');
+});
+```
+
+## Evitar
+
+- `UAlert` com `v-if="mutation.isError"` ou `v-if="mutation.isSuccess"` em formulários
+- `useToast()` direto nas páginas (exceto dentro de `useAppToast.ts`)
+- Mensagens de erro só em comentários no `catch` sem toast
+- Duplicar lógica de parsing de erro da API — usar `showApiError`

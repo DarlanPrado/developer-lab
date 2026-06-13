@@ -1,0 +1,42 @@
+# Dependências (instaladas dentro da imagem)
+node_modules
+**/node_modules
+.pnpm-store
+
+# Artefatos de build locais (recompilados no container)
+dist
+**/dist
+.output
+**/.output
+.nuxt
+**/.nuxt
+.data
+**/.data
+*.tsbuildinfo
+
+# Dados e secrets locais
+data
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Git, IDE e docs
+.git
+.gitignore
+.cursor
+.vscode
+.idea
+*.md
+docs
+coverage
+
+# Docker (evita rebuild desnecessário)
+docker-compose*.yml
+Dockerfile*
+!apps/**/Dockerfile
+traefik
+apps/web/public

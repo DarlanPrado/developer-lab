@@ -1,0 +1,13 @@
+node_modules
+dist
+.output
+.nuxt
+.data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+data/
+.DS_Store
+coverage
