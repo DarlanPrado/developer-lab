@@ -82,6 +82,8 @@ services:
   web:
     ports:
       - "80:3000"
+    environment:
+      - NUXT_COOKIE_SECURE=false
 EOF
 
 echo ">> Subindo containers (build pode demorar alguns minutos)..."
@@ -90,4 +92,4 @@ docker_cmd compose up -d --build api web
 IP="$(hostname -I | awk '{print $1}')"
 echo ""
 echo "Developer Lab no ar em: http://${IP}"
-echo "Login padrão: admin@lab.local / admin123"
+echo "Cadastre o primeiro usuário em /login — ele vira admin automaticamente."

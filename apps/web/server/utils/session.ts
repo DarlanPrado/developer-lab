@@ -12,9 +12,11 @@ export function setSessionCookie(
   token: string,
   remember: boolean,
 ) {
+  const { cookieSecure } = useRuntimeConfig();
+
   setCookie(event, TOKEN_COOKIE, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: cookieSecure,
     sameSite: 'lax',
     path: '/',
     ...(remember ? { maxAge: REMEMBER_MAX_AGE } : {}),

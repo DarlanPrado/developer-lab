@@ -5,6 +5,8 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
   runtimeConfig: {
     apiUrl: process.env.NUXT_API_URL ?? 'http://localhost:3001',
+    // false por padrão — HTTP sem HTTPS não envia cookies Secure
+    cookieSecure: process.env.NUXT_COOKIE_SECURE === 'true',
   },
   nitro: {
     experimental: {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 
-const { data, isPending } = useUsersQuery();
+const { data, isPending, isError } = useUsersQuery();
 
 const createMutation = useCreateUserMutation();
 const isCreatingUser = computed(() => createMutation.isPending.value);
@@ -79,7 +79,9 @@ async function createUser() {
 
         <div v-if="isPending" class="text-muted">Carregando usuários...</div>
 
-
+        <div v-else-if="isError" class="text-sm text-error">
+          Não foi possível carregar os usuários. Saia e entre novamente.
+        </div>
 
         <div v-else class="overflow-x-auto">
 
