@@ -4,20 +4,57 @@ set -euo pipefail
 REPO="https://github.com/DarlanPrado/developer-lab.git"
 TARGET="${1:-$HOME/developer-lab}"
 
-if ! command -v git >/dev/null; then
-  echo "Erro: git não instalado."
-  exit 1
-fi
+install_git() {
+  if command -v git >/dev/null; then
+    return
+  fi
 
-if ! command -v docker >/dev/null; then
-  echo "Erro: docker não instalado."
-  exit 1
-fi
+  echo ">> Instalando git..."
+  sudo apt-get update -qq
+  sudo apt-get install -y git
+}
 
-if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null; then
-  echo "Erro: docker compose não disponível."
+install_docker() {
+  if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
+    return
+  fi
+
+  echo ">> Instalando Docker e Docker Compose..."
+  sudo apt-get update -qq
+  sudo apt-get install -y ca-certificates curl gnupg
+
+  if ! command -v docker >/dev/null; then
+    sudo apt-get install -y docker.io
+    sudo systemctl enable --now docker
+  fi
+
+  if ! docker compose version >/dev/null 2>&1; then
+    sudo apt-get install -y docker-compose-v2 || sudo apt-get install -y docker-compose-plugin
+  fi
+
+  if ! groups "$USER" | grep -q '\bdocker\b'; then
+    sudo usermod -aG docker "$USER"
+    echo ">> Usuário adicionado ao grupo docker (vale após re-login ou newgrp docker)."
+  fi
+}
+
+docker_cmd() {
+  if docker info >/dev/null 2>&1; then
+    docker "$@"
+    return
+  fi
+
+  if sudo docker info >/dev/null 2>&1; then
+    sudo docker "$@"
+    return
+  fi
+
+  echo "Erro: Docker não responde. Tente: newgrp docker"
   exit 1
-fi
+}
+
+install_git
+install_docker
 
 if [ ! -d "$TARGET/.git" ]; then
   git clone "$REPO" "$TARGET"
@@ -47,11 +84,8 @@ services:
       - "80:3000"
 EOF
 
-if docker compose version >/dev/null 2>&1; then
-  docker compose up -d --build api web
-else
-  docker-compose up -d --build api web
-fi
+echo ">> Subindo containers (build pode demorar alguns minutos)..."
+docker_cmd compose up -d --build api web
 
 IP="$(hostname -I | awk '{print $1}')"
 echo ""
