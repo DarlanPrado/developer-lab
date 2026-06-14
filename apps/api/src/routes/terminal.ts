@@ -1,11 +1,11 @@
 import type { AuthUser, WorkspaceRole } from '@developer-lab/shared';
 import { and, eq } from 'drizzle-orm';
-import { workspaceMembers, workspaces } from '@developer-lab/db/schema';
+import { workspaceContainers, workspaceMembers, workspaces } from '@developer-lab/db/schema';
 import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import { hasWorkspaceRole } from '../types.js';
 import { createDockerService } from '../services/docker.service.js';
-import { reconcileWorkspaceContainer } from '../services/workspace-container.service.js';
+import { reconcileWorkspaceContainers } from '../services/workspace-container.service.js';
 
 interface TerminalMessage {
   type: 'resize';
@@ -45,9 +45,8 @@ export async function terminalRoutes(fastify: FastifyInstance) {
     { websocket: true },
     async (socket: WebSocket, request) => {
       const { key } = request.params as { key: string };
-      const token =
-        (request.query as { token?: string }).token
-        ?? request.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const query = request.query as { token?: string; container?: string };
+      const token = query.token ?? request.headers.authorization?.replace(/^Bearer\s+/i, '');
 
       if (!token) {
         socket.close(4401, 'Missing token');
@@ -84,20 +83,24 @@ export async function terminalRoutes(fastify: FastifyInstance) {
         return;
       }
 
-      const synced = await reconcileWorkspaceContainer(fastify, dockerService, workspace);
+      const synced = await reconcileWorkspaceContainers(fastify, dockerService, workspace);
+      const containerName = query.container;
+      const target = containerName
+        ? synced.containers.find((item) => item.name === containerName)
+        : synced.containers.find((item) => item.isPrimary) ?? synced.containers[0];
 
-      if (!synced.containerId) {
+      if (!target?.containerId) {
         socket.close(4404, 'Container not found');
         return;
       }
 
-      if (synced.status !== 'running') {
+      if (target.status !== 'running') {
         try {
-          await dockerService.startContainer(synced.containerId);
+          await dockerService.startContainer(target.containerId);
           await fastify.db
-            .update(workspaces)
+            .update(workspaceContainers)
             .set({ status: 'running' })
-            .where(eq(workspaces.id, workspace.id));
+            .where(eq(workspaceContainers.id, target.id));
         } catch (error) {
           fastify.log.error({ err: error }, 'Failed to start workspace container for terminal');
           socket.close(4403, 'Workspace container is not running');
@@ -105,7 +108,7 @@ export async function terminalRoutes(fastify: FastifyInstance) {
         }
       }
 
-      const container = fastify.docker.getContainer(synced.containerId);
+      const container = fastify.docker.getContainer(target.containerId);
 
       try {
         const exec = await container.exec({

@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import type { WorkspaceStatus } from '@developer-lab/shared';
-import { buildTraefikLabels } from '../utils/helpers.js';
+import { buildTraefikLabels, buildWorkspaceContainerName } from '../utils/helpers.js';
+
+const WORKSPACE_LABEL = 'lab.workspace';
+const SERVICE_LABEL = 'lab.service';
 
 export class DockerService {
   constructor(private readonly app: FastifyInstance) {}
@@ -39,31 +42,55 @@ export class DockerService {
     return networkName;
   }
 
-  async createWorkspaceContainer(options: {
-    key: string;
+  async createSubContainer(options: {
+    workspaceKey: string;
+    containerName: string;
     image: string;
-    port: number;
+    port?: number | null;
+    exposeViaTraefik?: boolean;
+    env?: string[];
     cpuLimit?: number | null;
     memoryLimit?: number | null;
-    env?: string[];
   }) {
     await this.ensureSharedNetwork();
-    const workspaceNetwork = await this.ensureWorkspaceNetwork(options.key);
+    const workspaceNetwork = await this.ensureWorkspaceNetwork(options.workspaceKey);
+    const dockerName = buildWorkspaceContainerName(options.workspaceKey, options.containerName);
 
-    const labels = buildTraefikLabels(
-      options.key,
-      options.port,
-      this.app.config.labDomain,
-    );
+    const labels: Record<string, string> = {
+      [WORKSPACE_LABEL]: options.workspaceKey,
+      [SERVICE_LABEL]: options.containerName,
+    };
+
+    if (options.exposeViaTraefik && options.port) {
+      Object.assign(
+        labels,
+        buildTraefikLabels(
+          options.workspaceKey,
+          options.containerName,
+          options.port,
+          this.app.config.labDomain,
+        ),
+      );
+    }
+
+    const exposedPorts = options.port
+      ? { [`${options.port}/tcp`]: {} }
+      : undefined;
+
+    const endpointsConfig: Record<string, object> = {
+      [workspaceNetwork]: {},
+    };
+
+    if (options.exposeViaTraefik) {
+      endpointsConfig[this.sharedNetwork] = {};
+    }
 
     const container = await this.docker.createContainer({
-      name: `lab-ws-${options.key}`,
+      name: dockerName,
       Image: options.image,
       Cmd: ['tail', '-f', '/dev/null'],
       Env: options.env ?? [],
-      ExposedPorts: {
-        [`${options.port}/tcp`]: {},
-      },
+      ExposedPorts: exposedPorts,
       Labels: labels,
       HostConfig: {
         NetworkMode: workspaceNetwork,
@@ -72,19 +99,38 @@ export class DockerService {
         RestartPolicy: { Name: 'unless-stopped' },
       },
       NetworkingConfig: {
-        EndpointsConfig: {
-          [workspaceNetwork]: {},
-          [this.sharedNetwork]: {},
-        },
+        EndpointsConfig: endpointsConfig,
       },
     });
 
     return container;
   }
 
-  async findExistingWorkspaceContainer(key: string) {
+  async createWorkspaceContainer(options: {
+    key: string;
+    image: string;
+    port: number;
+    cpuLimit?: number | null;
+    memoryLimit?: number | null;
+    env?: string[];
+  }) {
+    return this.createSubContainer({
+      workspaceKey: options.key,
+      containerName: 'app',
+      image: options.image,
+      port: options.port,
+      exposeViaTraefik: true,
+      env: options.env,
+      cpuLimit: options.cpuLimit,
+      memoryLimit: options.memoryLimit,
+    });
+  }
+
+  async findExistingSubContainer(workspaceKey: string, containerName: string) {
+    const dockerName = buildWorkspaceContainerName(workspaceKey, containerName);
+
     try {
-      const container = this.docker.getContainer(`lab-ws-${key}`);
+      const container = this.docker.getContainer(dockerName);
       const info = await container.inspect();
 
       if (info.State.Restarting || info.RestartCount > 3) {
@@ -98,6 +144,28 @@ export class DockerService {
     }
   }
 
+  async findExistingWorkspaceContainer(key: string) {
+    return this.findExistingSubContainer(key, 'app');
+  }
+
+  async ensureSubContainer(options: {
+    workspaceKey: string;
+    containerName: string;
+    image: string;
+    port?: number | null;
+    exposeViaTraefik?: boolean;
+    env?: string[];
+    cpuLimit?: number | null;
+    memoryLimit?: number | null;
+  }) {
+    const existing = await this.findExistingSubContainer(options.workspaceKey, options.containerName);
+    if (existing) {
+      return existing;
+    }
+
+    return this.createSubContainer(options);
+  }
+
   async ensureWorkspaceContainer(workspace: {
     key: string;
     image: string | null;
@@ -105,18 +173,30 @@ export class DockerService {
     cpuLimit?: number | null;
     memoryLimit?: number | null;
   }) {
-    const existing = await this.findExistingWorkspaceContainer(workspace.key);
-    if (existing) {
-      return existing;
-    }
-
-    return this.createWorkspaceContainer({
-      key: workspace.key,
+    return this.ensureSubContainer({
+      workspaceKey: workspace.key,
+      containerName: 'app',
       image: workspace.image ?? 'node:22-alpine',
       port: workspace.port ?? 3000,
+      exposeViaTraefik: true,
       cpuLimit: workspace.cpuLimit,
       memoryLimit: workspace.memoryLimit,
     });
+  }
+
+  async listWorkspaceContainers(workspaceKey: string) {
+    const containers = await this.docker.listContainers({ all: true });
+    return containers.filter((container) =>
+      container.Labels?.[WORKSPACE_LABEL] === workspaceKey,
+    );
+  }
+
+  async removeWorkspaceContainers(workspaceKey: string) {
+    const containers = await this.listWorkspaceContainers(workspaceKey);
+
+    await Promise.all(
+      containers.map((container) => this.removeContainer(container.Id)),
+    );
   }
 
   async getContainerRuntimeStatus(containerId: string): Promise<WorkspaceStatus | null> {
@@ -124,7 +204,7 @@ export class DockerService {
       const info = await this.docker.getContainer(containerId).inspect();
 
       if (info.State.Restarting) {
-        return null;
+        return 'error';
       }
 
       if (info.State.Running) {
@@ -135,7 +215,7 @@ export class DockerService {
         return 'stopped';
       }
 
-      return null;
+      return 'error';
     } catch {
       return null;
     }
@@ -209,6 +289,7 @@ export class DockerService {
     const memoryLimit = stats.memory_stats.limit ?? 0;
 
     return {
+      containerId,
       cpuPercent: Number(cpuPercent.toFixed(2)),
       memoryUsage,
       memoryLimit,

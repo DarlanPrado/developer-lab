@@ -6,6 +6,8 @@ export type Visibility = 'public' | 'restricted' | 'key_only';
 
 export type WorkspaceStatus = 'running' | 'stopped' | 'sleep' | 'error';
 
+export type WorkspaceContainerStatus = 'running' | 'stopped' | 'error';
+
 export type ResourceStatus = 'online' | 'degraded' | 'offline' | 'unknown';
 
 export type ResourceType =
@@ -70,7 +72,41 @@ export interface Workspace {
   containerId: string | null;
   image: string | null;
   port: number | null;
+  manifest: string | null;
   createdAt: Date;
+}
+
+export interface WorkspaceContainer {
+  id: string;
+  workspaceId: string;
+  name: string;
+  image: string;
+  port: number | null;
+  exposeViaTraefik: boolean;
+  isPrimary: boolean;
+  containerId: string | null;
+  status: WorkspaceContainerStatus;
+  env: EnvVariable[];
+  cpuLimit: number | null;
+  memoryLimit: number | null;
+  order: number;
+}
+
+export interface WorkspaceContainerStats {
+  containerId: string;
+  cpuPercent: number;
+  memoryUsage: number;
+  memoryLimit: number;
+  memoryPercent: number;
+}
+
+export type CreateWorkspaceContainerRequest = Omit<
+  WorkspaceContainer,
+  'id' | 'workspaceId' | 'containerId' | 'status'
+>;
+
+export interface WorkspaceWithContainers extends Workspace {
+  containers: WorkspaceContainer[];
 }
 
 export interface WorkspaceMember {
@@ -147,6 +183,7 @@ export interface CreateWorkspaceRequest {
   image?: string;
   port?: number;
   resourceIds?: string[];
+  containers?: CreateWorkspaceContainerRequest[];
 }
 
 export interface CreateResourceRequest {

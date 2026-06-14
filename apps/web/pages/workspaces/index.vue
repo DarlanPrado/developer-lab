@@ -30,6 +30,20 @@ const form = reactive({
   port: 3000,
 });
 
+const extraContainers = ref<Array<{ name: string; image: string; port: number | null }>>([]);
+
+function addExtraContainer() {
+  extraContainers.value.push({
+    name: '',
+    image: 'postgres:16',
+    port: null,
+  });
+}
+
+function removeExtraContainer(index: number) {
+  extraContainers.value.splice(index, 1);
+}
+
 const isKeyManual = ref(false);
 
 watch(
@@ -128,6 +142,28 @@ async function createWorkspace(event: FormSubmitEvent<typeof form>) {
       description: event.data.description.trim() || undefined,
       image: getImageValue(event.data.image),
       port: Number(event.data.port),
+      containers: [
+        {
+          name: 'app',
+          image: getImageValue(event.data.image),
+          port: Number(event.data.port),
+          exposeViaTraefik: true,
+          isPrimary: true,
+          env: [],
+          order: 0,
+        },
+        ...extraContainers.value
+          .filter((item) => item.name.trim() && item.image.trim())
+          .map((item, index) => ({
+            name: item.name.trim(),
+            image: item.image.trim(),
+            port: item.port,
+            exposeViaTraefik: false,
+            isPrimary: false,
+            env: [],
+            order: index + 1,
+          })),
+      ],
     });
 
     form.name = '';
@@ -135,6 +171,7 @@ async function createWorkspace(event: FormSubmitEvent<typeof form>) {
     form.description = '';
     form.image = 'node:22-alpine';
     form.port = 3000;
+    extraContainers.value = [];
     isKeyManual.value = false;
     showSuccess('Workspace criado com sucesso');
   } catch (error) {
@@ -242,6 +279,34 @@ async function createWorkspace(event: FormSubmitEvent<typeof form>) {
               class="w-full"
             />
           </UFormField>
+
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <p class="text-sm font-medium text-highlighted">Serviços adicionais</p>
+              <UButton size="xs" variant="soft" icon="i-lucide-plus" @click="addExtraContainer">
+                Adicionar
+              </UButton>
+            </div>
+
+            <div
+              v-for="(container, index) in extraContainers"
+              :key="index"
+              class="space-y-2 rounded-lg border border-default p-3"
+            >
+              <UFormField label="Nome">
+                <UInput v-model="container.name" placeholder="postgres" class="w-full" />
+              </UFormField>
+              <UFormField label="Imagem">
+                <UInput v-model="container.image" placeholder="postgres:16" class="w-full" />
+              </UFormField>
+              <UFormField label="Porta">
+                <UInputNumber v-model="container.port" :min="1" :max="65535" class="w-full" />
+              </UFormField>
+              <UButton size="xs" color="error" variant="ghost" @click="removeExtraContainer(index)">
+                Remover
+              </UButton>
+            </div>
+          </div>
 
           <UButton type="submit" block size="lg" :loading="isCreatingWorkspace">
             Criar workspace

@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -65,8 +65,38 @@ export const workspaces = sqliteTable('workspaces', {
   containerId: text('container_id'),
   image: text('image'),
   port: integer('port'),
+  manifest: text('manifest'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 });
+
+export const workspaceContainers = sqliteTable(
+  'workspace_containers',
+  {
+    id: text('id').primaryKey(),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    image: text('image').notNull(),
+    port: integer('port'),
+    exposeViaTraefik: integer('expose_via_traefik', { mode: 'boolean' }).notNull().default(false),
+    isPrimary: integer('is_primary', { mode: 'boolean' }).notNull().default(false),
+    containerId: text('container_id'),
+    status: text('status', { enum: ['running', 'stopped', 'error'] })
+      .notNull()
+      .default('stopped'),
+    env: text('env'),
+    cpuLimit: real('cpu_limit'),
+    memoryLimit: integer('memory_limit'),
+    order: integer('order').notNull().default(0),
+  },
+  (table) => ({
+    workspaceNameIdx: uniqueIndex('workspace_containers_workspace_name_idx').on(
+      table.workspaceId,
+      table.name,
+    ),
+  }),
+);
 
 export const workspaceMembers = sqliteTable('workspace_members', {
   workspaceId: text('workspace_id')
@@ -140,6 +170,14 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   members: many(workspaceMembers),
   dependencies: many(workspaceDependencies),
   deployments: many(deployments),
+  containers: many(workspaceContainers),
+}));
+
+export const workspaceContainersRelations = relations(workspaceContainers, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [workspaceContainers.workspaceId],
+    references: [workspaces.id],
+  }),
 }));
 
 export const resourcesRelations = relations(resources, ({ many }) => ({

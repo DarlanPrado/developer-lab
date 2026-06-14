@@ -12,11 +12,16 @@ function extractWorkspaceKey(request: Request) {
   return pathname.split('/').pop() ?? null;
 }
 
-function resolveConnection(peer: { context?: { token?: string; key?: string }; request: Request }) {
+function extractContainerName(request: Request) {
+  return new URL(request.url).searchParams.get('container');
+}
+
+function resolveConnection(peer: { context?: { token?: string; key?: string; container?: string | null }; request: Request }) {
   const token = peer.context?.token ?? getTokenFromRequest(peer.request);
   const key = peer.context?.key ?? extractWorkspaceKey(peer.request);
+  const container = peer.context?.container ?? extractContainerName(peer.request);
 
-  return { token, key };
+  return { token, key, container };
 }
 
 async function forwardBackendPayload(
@@ -57,15 +62,17 @@ export default defineWebSocketHandler({
       throw createError({ statusCode: 400, statusMessage: 'Missing workspace key' });
     }
 
+    const container = extractContainerName(request);
+
     // crossws@0.3.5 exposes context as read-only — mutate in place instead of reassigning.
-    Object.assign(request.context, { token, key });
+    Object.assign(request.context, { token, key, container });
 
     return {};
   },
 
   open(peer) {
     const config = useRuntimeConfig();
-    const { token, key } = resolveConnection(peer);
+    const { token, key, container } = resolveConnection(peer);
 
     if (!token || !key) {
       peer.close(4401, 'Unauthorized');
@@ -73,7 +80,8 @@ export default defineWebSocketHandler({
     }
 
     const wsBase = String(config.apiUrl).replace(/^http/, 'ws');
-    const backendUrl = `${wsBase}/ws/terminal/${encodeURIComponent(key)}?token=${encodeURIComponent(token)}`;
+    const containerQuery = container ? `&container=${encodeURIComponent(container)}` : '';
+    const backendUrl = `${wsBase}/ws/terminal/${encodeURIComponent(key)}?token=${encodeURIComponent(token)}${containerQuery}`;
 
     const backend = new WebSocket(backendUrl);
     backendSockets.set(peer.id, backend);

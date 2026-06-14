@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import {
   resources,
   users,
+  workspaceContainers,
   workspaceDependencies,
   workspaceMembers,
   workspaces,
@@ -10,9 +11,29 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireWorkspaceRole } from '../middleware/workspace-permission.js';
 import { createDockerService } from '../services/docker.service.js';
-import { reconcileWorkspaceContainer } from '../services/workspace-container.service.js';
+import {
+  envVariablesToDockerEnv,
+  reconcileWorkspaceContainer,
+  reconcileWorkspaceContainers,
+  sanitizeWorkspaceContainer,
+  serializeContainerEnv,
+  syncWorkspaceManifest,
+} from '../services/workspace-container.service.js';
+import { workspaceContainerRoutes } from './workspace-containers.js';
 import { sanitizeUser } from '../types.js';
 import { buildEnvFromResource, createId, now, slugify, withTimeout } from '../utils/helpers.js';
+
+const containerInputSchema = z.object({
+  name: z.string().min(1).regex(/^[a-z0-9-]+$/),
+  image: z.string().min(1),
+  port: z.number().int().min(1).max(65535).nullable().optional(),
+  exposeViaTraefik: z.boolean().optional(),
+  isPrimary: z.boolean().optional(),
+  env: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
+  cpuLimit: z.number().positive().nullable().optional(),
+  memoryLimit: z.number().int().positive().nullable().optional(),
+  order: z.number().int().min(0).optional(),
+});
 
 const createWorkspaceSchema = z.object({
   key: z.string().min(2).optional(),
@@ -24,6 +45,7 @@ const createWorkspaceSchema = z.object({
   image: z.string().optional(),
   port: z.number().int().min(1000).max(9999).optional(),
   resourceIds: z.array(z.string()).optional(),
+  containers: z.array(containerInputSchema).optional(),
 });
 
 const updateWorkspaceSchema = createWorkspaceSchema.partial();
@@ -35,6 +57,8 @@ const addWorkspaceMemberSchema = z.object({
 
 export async function workspacesRoutes(fastify: FastifyInstance) {
   const dockerService = createDockerService(fastify);
+
+  await fastify.register(workspaceContainerRoutes);
 
   fastify.get(
     '/workspaces',
@@ -77,7 +101,7 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: 'Workspace not found' });
       }
 
-      const synced = await reconcileWorkspaceContainer(fastify, dockerService, workspace);
+      const synced = await reconcileWorkspaceContainers(fastify, dockerService, workspace);
 
       const deps = await fastify.db
         .select({ resource: resources })
@@ -86,7 +110,8 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         .where(eq(workspaceDependencies.workspaceId, workspace.id));
 
       return {
-        ...synced,
+        ...synced.workspace,
+        containers: synced.containers,
         dependencies: deps.map((d) => d.resource),
       };
     },
@@ -106,7 +131,11 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: 'Workspace not found' });
       }
 
-      return reconcileWorkspaceContainer(fastify, dockerService, workspace);
+      const synced = await reconcileWorkspaceContainers(fastify, dockerService, workspace);
+      return {
+        ...synced.workspace,
+        containers: synced.containers,
+      };
     },
   );
 
@@ -140,26 +169,21 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         containerId: null as string | null,
         image,
         port,
+        manifest: null as string | null,
         createdAt: now(),
       };
 
-      try {
-        const container = await withTimeout(
-          dockerService.createWorkspaceContainer({
-            key,
+      const containerInputs = body.containers?.length
+        ? body.containers
+        : [{
+            name: 'app',
             image,
             port,
-            cpuLimit: workspace.cpuLimit,
-            memoryLimit: workspace.memoryLimit,
-          }),
-          15_000,
-          'Docker container creation timed out',
-        );
-
-        workspace.containerId = container.id;
-      } catch (error) {
-        fastify.log.warn({ err: error }, 'Failed to create Docker container');
-      }
+            exposeViaTraefik: true,
+            isPrimary: true,
+            env: [],
+            order: 0,
+          }];
 
       await fastify.db.insert(workspaces).values(workspace);
       await fastify.db.insert(workspaceMembers).values({
@@ -167,6 +191,71 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         userId: request.authUser!.id,
         role: 'owner',
       });
+
+      for (const [index, containerInput] of containerInputs.entries()) {
+        const row = {
+          id: createId(),
+          workspaceId: workspace.id,
+          name: containerInput.name,
+          image: containerInput.image,
+          port: containerInput.port ?? null,
+          exposeViaTraefik: containerInput.exposeViaTraefik ?? (containerInput.name === 'app'),
+          isPrimary: containerInput.isPrimary ?? index === 0,
+          containerId: null as string | null,
+          status: 'stopped' as const,
+          env: serializeContainerEnv(containerInput.env ?? []),
+          cpuLimit: containerInput.cpuLimit ?? workspace.cpuLimit,
+          memoryLimit: containerInput.memoryLimit ?? workspace.memoryLimit,
+          order: containerInput.order ?? index,
+        };
+
+        try {
+          const container = await withTimeout(
+            dockerService.createSubContainer({
+              workspaceKey: key,
+              containerName: row.name,
+              image: row.image,
+              port: row.port,
+              exposeViaTraefik: row.exposeViaTraefik,
+              env: envVariablesToDockerEnv(containerInput.env ?? []),
+              cpuLimit: row.cpuLimit,
+              memoryLimit: row.memoryLimit,
+            }),
+            15_000,
+            'Docker container creation timed out',
+          );
+          row.containerId = container.id;
+        } catch (error) {
+          fastify.log.warn({ err: error, containerName: row.name }, 'Failed to create workspace container');
+        }
+
+        await fastify.db.insert(workspaceContainers).values(row);
+
+        if (row.isPrimary) {
+          workspace.containerId = row.containerId;
+          workspace.image = row.image;
+          workspace.port = row.port ?? port;
+        }
+      }
+
+      workspace.manifest = await syncWorkspaceManifest(fastify, workspace.id);
+
+      if (workspace.containerId) {
+        await fastify.db
+          .update(workspaces)
+          .set({
+            containerId: workspace.containerId,
+            image: workspace.image,
+            port: workspace.port,
+            manifest: workspace.manifest,
+          })
+          .where(eq(workspaces.id, workspace.id));
+      } else {
+        await fastify.db
+          .update(workspaces)
+          .set({ manifest: workspace.manifest })
+          .where(eq(workspaces.id, workspace.id));
+      }
 
       if (body.resourceIds?.length) {
         await fastify.db.insert(workspaceDependencies).values(
@@ -177,7 +266,12 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         );
       }
 
-      return reply.status(201).send(workspace);
+      const synced = await reconcileWorkspaceContainers(fastify, dockerService, workspace);
+
+      return reply.status(201).send({
+        ...synced.workspace,
+        containers: synced.containers,
+      });
     },
   );
 
@@ -243,6 +337,8 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         await dockerService.removeContainer(workspace.containerId);
       }
 
+      await dockerService.removeWorkspaceContainers(workspace.key);
+
       await fastify.db.delete(workspaces).where(eq(workspaces.id, id));
       return reply.status(204).send();
     },
@@ -282,13 +378,14 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: 'Workspace not found' });
       }
 
-      const synced = await reconcileWorkspaceContainer(fastify, dockerService, workspace);
+      const synced = await reconcileWorkspaceContainers(fastify, dockerService, workspace);
+      const primary = synced.containers.find((container) => container.isPrimary) ?? synced.containers[0];
 
-      if (!synced.containerId) {
+      if (!primary?.containerId) {
         return reply.status(404).send({ error: 'Container not found' });
       }
 
-      const logs = await dockerService.getContainerLogs(synced.containerId);
+      const logs = await dockerService.getContainerLogs(primary.containerId);
       return { logs };
     },
   );
@@ -307,34 +404,21 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: 'Workspace not found' });
       }
 
-      const synced = await reconcileWorkspaceContainer(fastify, dockerService, workspace);
+      const synced = await reconcileWorkspaceContainers(fastify, dockerService, workspace);
+      const primary = synced.containers.find((container) => container.isPrimary) ?? synced.containers[0];
 
-      if (!synced.containerId) {
+      if (!primary?.containerId) {
         return reply.status(404).send({ error: 'Container not found' });
       }
 
       try {
-        const stats = await dockerService.getContainerStats(synced.containerId);
+        const stats = await dockerService.getContainerStats(primary.containerId);
         return stats;
       } catch {
         return reply.status(503).send({ error: 'Stats unavailable' });
       }
     },
   );
-
-  async function resolveContainerId(
-    workspace: typeof workspaces.$inferSelect,
-    reply: { status: (code: number) => { send: (payload: unknown) => unknown } },
-  ) {
-    const reconciled = await reconcileWorkspaceContainer(fastify, dockerService, workspace);
-
-    if (!reconciled.containerId) {
-      reply.status(503).send({ error: 'Failed to provision workspace container' });
-      return null;
-    }
-
-    return reconciled.containerId;
-  }
 
   async function lifecycleAction(
     id: string,
@@ -349,41 +433,57 @@ export async function workspacesRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ error: 'Workspace not found' });
     }
 
-    const containerId = await resolveContainerId(workspace, reply);
-    if (!containerId) {
-      return;
+    const synced = await reconcileWorkspaceContainers(fastify, dockerService, workspace);
+    const ordered = [...synced.containers].sort((a, b) => a.order - b.order);
+
+    if (!ordered.length) {
+      return reply.status(503).send({ error: 'No containers configured for workspace' });
     }
 
-    if (action === 'start' || action === 'restart') {
-      if (action === 'restart') {
+    for (const container of ordered) {
+      if (!container.containerId) continue;
+
+      if (action === 'start' || action === 'restart') {
+        if (action === 'restart') {
+          await withTimeout(
+            dockerService.stopContainer(container.containerId),
+            15_000,
+            'Docker container stop timed out',
+          );
+        }
         await withTimeout(
-          dockerService.stopContainer(containerId),
+          dockerService.startContainer(container.containerId),
+          15_000,
+          'Docker container start timed out',
+        );
+        await fastify.db
+          .update(workspaceContainers)
+          .set({ status: 'running' })
+          .where(eq(workspaceContainers.id, container.id));
+      } else {
+        await withTimeout(
+          dockerService.stopContainer(container.containerId),
           15_000,
           'Docker container stop timed out',
         );
+        await fastify.db
+          .update(workspaceContainers)
+          .set({ status: 'stopped' })
+          .where(eq(workspaceContainers.id, container.id));
       }
-      await withTimeout(
-        dockerService.startContainer(containerId),
-        15_000,
-        'Docker container start timed out',
-      );
-      await fastify.db
-        .update(workspaces)
-        .set({ status: 'running' })
-        .where(eq(workspaces.id, id));
-    } else {
-      await withTimeout(
-        dockerService.stopContainer(containerId),
-        15_000,
-        'Docker container stop timed out',
-      );
-      await fastify.db
-        .update(workspaces)
-        .set({ status: 'stopped' })
-        .where(eq(workspaces.id, id));
     }
 
-    return fastify.db.query.workspaces.findFirst({ where: eq(workspaces.id, id) });
+    await reconcileWorkspaceContainers(fastify, dockerService, workspace);
+
+    const updated = await fastify.db.query.workspaces.findFirst({ where: eq(workspaces.id, id) });
+    const containers = await fastify.db.query.workspaceContainers.findMany({
+      where: eq(workspaceContainers.workspaceId, id),
+    });
+
+    return {
+      ...updated,
+      containers: containers.map(sanitizeWorkspaceContainer),
+    };
   }
 
   fastify.post(

@@ -1,21 +1,26 @@
 import type {
+  CreateWorkspaceContainerRequest,
   CreateWorkspaceRequest,
   EnvVariable,
   Resource,
   User,
   Workspace,
+  WorkspaceContainer,
+  WorkspaceContainerStats,
   WorkspaceMemberWithUser,
   WorkspaceRole,
+  WorkspaceWithContainers,
 } from '@developer-lab/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query';
 import type { MaybeRefOrGetter } from 'vue';
 import { computed, toValue } from 'vue';
 
-export type WorkspaceWithDependencies = Workspace & {
+export type WorkspaceWithDependencies = WorkspaceWithContainers & {
   dependencies: Resource[];
 };
 
 type WorkspaceAction = 'start' | 'stop' | 'restart';
+type ContainerAction = WorkspaceAction;
 
 export function useWorkspacesQuery() {
   const { api } = useApi();
@@ -182,5 +187,154 @@ export function useWorkspaceLogsQuery(
     queryFn: () =>
       api<{ logs: string }>(`/workspaces/${toValue(workspaceId)}/logs`),
     enabled: computed(() => !!toValue(workspaceId)),
+  });
+}
+
+export function useWorkspaceContainersQuery(
+  workspaceId: MaybeRefOrGetter<string | undefined>,
+) {
+  const { api } = useApi();
+  return useQuery({
+    queryKey: computed(() => ['workspaces', toValue(workspaceId), 'containers']),
+    queryFn: () =>
+      api<WorkspaceContainer[]>(`/workspaces/${toValue(workspaceId)}/containers`),
+    enabled: computed(() => !!toValue(workspaceId)),
+    refetchInterval: 5000,
+  });
+}
+
+export function useContainerActionMutation() {
+  const { api } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      containerId,
+      action,
+    }: {
+      workspaceId: string;
+      containerId: string;
+      action: ContainerAction;
+    }) =>
+      api<WorkspaceContainer>(
+        `/workspaces/${workspaceId}/containers/${containerId}/${action}`,
+        { method: 'POST' },
+      ),
+    onSuccess: (_data, { workspaceId }) => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', 'by-key'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', workspaceId, 'containers'] });
+    },
+  });
+}
+
+export function useCreateContainerMutation() {
+  const { api } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      body,
+    }: {
+      workspaceId: string;
+      body: CreateWorkspaceContainerRequest;
+    }) =>
+      api<WorkspaceContainer>(`/workspaces/${workspaceId}/containers`, {
+        method: 'POST',
+        body,
+      }),
+    onSuccess: (_data, { workspaceId }) => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces', workspaceId, 'containers'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', 'by-key'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', workspaceId, 'manifest'] });
+    },
+  });
+}
+
+export function useRemoveContainerMutation() {
+  const { api } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      containerId,
+    }: {
+      workspaceId: string;
+      containerId: string;
+    }) =>
+      api<void>(`/workspaces/${workspaceId}/containers/${containerId}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: (_data, { workspaceId }) => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces', workspaceId, 'containers'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', 'by-key'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', workspaceId, 'manifest'] });
+    },
+  });
+}
+
+export function useContainerLogsQuery(
+  workspaceId: MaybeRefOrGetter<string | undefined>,
+  containerId: MaybeRefOrGetter<string | undefined>,
+) {
+  const { api } = useApi();
+  return useQuery({
+    queryKey: computed(() => ['workspaces', toValue(workspaceId), 'containers', toValue(containerId), 'logs']),
+    queryFn: () =>
+      api<{ logs: string }>(
+        `/workspaces/${toValue(workspaceId)}/containers/${toValue(containerId)}/logs`,
+      ),
+    enabled: computed(() => !!toValue(workspaceId) && !!toValue(containerId)),
+  });
+}
+
+export function useContainerStatsQuery(
+  workspaceId: MaybeRefOrGetter<string | undefined>,
+  containerId: MaybeRefOrGetter<string | undefined>,
+) {
+  const { api } = useApi();
+  return useQuery({
+    queryKey: computed(() => ['workspaces', toValue(workspaceId), 'containers', toValue(containerId), 'stats']),
+    queryFn: () =>
+      api<WorkspaceContainerStats>(
+        `/workspaces/${toValue(workspaceId)}/containers/${toValue(containerId)}/stats`,
+      ),
+    enabled: computed(() => !!toValue(workspaceId) && !!toValue(containerId)),
+    refetchInterval: 5000,
+  });
+}
+
+export function useWorkspaceManifestQuery(
+  workspaceId: MaybeRefOrGetter<string | undefined>,
+) {
+  const { api } = useApi();
+  return useQuery({
+    queryKey: computed(() => ['workspaces', toValue(workspaceId), 'manifest']),
+    queryFn: () =>
+      api<{ manifest: string }>(`/workspaces/${toValue(workspaceId)}/manifest`),
+    enabled: computed(() => !!toValue(workspaceId)),
+  });
+}
+
+export function useUpdateWorkspaceManifestMutation() {
+  const { api } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      manifest,
+    }: {
+      workspaceId: string;
+      manifest: string;
+    }) =>
+      api<{ manifest: string; containers: WorkspaceContainer[] }>(
+        `/workspaces/${workspaceId}/manifest`,
+        { method: 'PUT', body: { manifest } },
+      ),
+    onSuccess: (_data, { workspaceId }) => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces', workspaceId, 'manifest'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', workspaceId, 'containers'] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces', 'by-key'] });
+    },
   });
 }

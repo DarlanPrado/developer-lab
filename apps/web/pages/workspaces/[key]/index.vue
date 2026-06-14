@@ -45,6 +45,8 @@ const actionLabels = {
   restart: { success: 'Workspace reiniciado com sucesso', error: 'Não foi possível reiniciar o workspace' },
 } as const;
 
+const activeTab = ref('containers');
+
 const copiedKey = ref<string | null>(null);
 const isAddModalOpen = ref(false);
 const selectedResourceIds = ref<string[]>([]);
@@ -181,7 +183,10 @@ async function copyValue(value: string, envKey: string) {
             Reiniciar
           </UButton>
 
-          <UButton :to="`/workspaces/${data.key}/terminal`" variant="soft">
+          <UButton
+            :to="`/workspaces/${data.key}/terminal${(data.containers?.find(c => c.isPrimary) ?? data.containers?.[0]) ? `?container=${encodeURIComponent((data.containers?.find(c => c.isPrimary) ?? data.containers?.[0])!.name)}` : ''}`"
+            variant="soft"
+          >
             Terminal
           </UButton>
 
@@ -191,37 +196,36 @@ async function copyValue(value: string, envKey: string) {
         </div>
       </div>
 
-      <div class="grid gap-6 xl:grid-cols-2">
+      <UTabs
+        v-model="activeTab"
+        :items="[
+          { label: 'Containers', value: 'containers' },
+          { label: 'Manifesto', value: 'manifest' },
+          { label: 'Dependências', value: 'dependencies' },
+          { label: 'Membros', value: 'members' },
+          { label: 'Variáveis', value: 'env' },
+        ]"
+        class="mb-6"
+      />
+
+      <div v-show="activeTab === 'containers'" class="mb-6">
         <UCard variant="subtle">
-          <template #header>
-            <h2 class="font-semibold">Status</h2>
-          </template>
-
-          <div class="space-y-3 text-sm">
-            <div class="flex justify-between">
-              <span class="text-muted">Status</span>
-              <UBadge :color="data.status === 'running' ? 'success' : data.status === 'error' ? 'error' : 'neutral'">
-                {{ data.status }}
-              </UBadge>
-            </div>
-
-            <div class="flex justify-between">
-              <span class="text-muted">Imagem</span>
-              <code>{{ data.image }}</code>
-            </div>
-
-            <div class="flex justify-between">
-              <span class="text-muted">Porta</span>
-              <span>{{ data.port }}</span>
-            </div>
-
-            <div class="flex justify-between">
-              <span class="text-muted">Container</span>
-              <code class="truncate max-w-xs">{{ data.containerId || 'N/A' }}</code>
-            </div>
-          </div>
+          <WorkspaceContainersPanel
+            v-if="workspaceId"
+            :workspace-id="workspaceId"
+            :workspace-key="data.key"
+            :can-manage="canManageMembers"
+          />
         </UCard>
+      </div>
 
+      <div v-show="activeTab === 'manifest'" class="mb-6">
+        <UCard variant="subtle">
+          <WorkspaceManifestPanel v-if="workspaceId" :workspace-id="workspaceId" />
+        </UCard>
+      </div>
+
+      <div v-show="activeTab === 'dependencies'" class="mb-6">
         <UCard variant="subtle">
           <template #header>
             <div class="flex items-center justify-between gap-3">
@@ -270,8 +274,10 @@ async function copyValue(value: string, envKey: string) {
             </li>
           </ul>
         </UCard>
+      </div>
 
-        <UCard variant="subtle" class="xl:col-span-2">
+      <div v-show="activeTab === 'members'" class="mb-6">
+        <UCard variant="subtle">
           <template #header>
             <h2 class="font-semibold">Membros</h2>
           </template>
@@ -283,8 +289,10 @@ async function copyValue(value: string, envKey: string) {
             :can-manage-members="canManageMembers"
           />
         </UCard>
+      </div>
 
-        <UCard variant="subtle" class="xl:col-span-2">
+      <div v-show="activeTab === 'env'" class="mb-6">
+        <UCard variant="subtle">
           <template #header>
             <h2 class="font-semibold">Variáveis de ambiente</h2>
           </template>

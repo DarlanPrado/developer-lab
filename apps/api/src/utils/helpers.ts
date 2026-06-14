@@ -25,13 +25,28 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string)
   ]);
 }
 
-export function buildTraefikLabels(key: string, port: number, domain: string) {
+export function buildTraefikLabels(
+  workspaceKey: string,
+  serviceName: string,
+  port: number,
+  domain: string,
+) {
+  const routerKey = serviceName === 'app' || serviceName === 'main'
+    ? workspaceKey
+    : `${workspaceKey}-${serviceName}`;
+
   return {
     'traefik.enable': 'true',
-    [`traefik.http.routers.${key}.rule`]: `Host(\`${key}.${domain}\`)`,
-    [`traefik.http.services.${key}.loadbalancer.server.port`]: String(port),
+    [`traefik.http.routers.${routerKey}.rule`]: `Host(\`${routerKey}.${domain}\`)`,
+    [`traefik.http.services.${routerKey}.loadbalancer.server.port`]: String(port),
     'traefik.docker.network': 'lab-shared',
   };
+}
+
+export function buildWorkspaceContainerName(workspaceKey: string, containerName: string) {
+  return containerName === 'app' || containerName === 'main'
+    ? `lab-ws-${workspaceKey}`
+    : `lab-ws-${workspaceKey}-${containerName}`;
 }
 
 export function buildEnvFromResource(

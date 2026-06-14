@@ -67,7 +67,33 @@ async function ensureSchema(db: ReturnType<typeof createDatabase>) {
       container_id TEXT,
       image TEXT,
       port INTEGER,
+      manifest TEXT,
       created_at INTEGER NOT NULL
+    )
+  `);
+
+  try {
+    await db.run(sql`ALTER TABLE workspaces ADD COLUMN manifest TEXT`);
+  } catch {
+    // Column already exists.
+  }
+
+  await db.run(sql`
+    CREATE TABLE IF NOT EXISTS workspace_containers (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      image TEXT NOT NULL,
+      port INTEGER,
+      expose_via_traefik INTEGER NOT NULL DEFAULT 0,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      container_id TEXT,
+      status TEXT NOT NULL DEFAULT 'stopped',
+      env TEXT,
+      cpu_limit REAL,
+      memory_limit INTEGER,
+      "order" INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(workspace_id, name)
     )
   `);
 
